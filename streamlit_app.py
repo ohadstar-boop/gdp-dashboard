@@ -1,151 +1,113 @@
 import streamlit as st
+import yfinance as yf
+import ta
 import pandas as pd
-import math
-from pathlib import Path
+from openai import OpenAI
+import streamlit.components.v1 as components
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+# הגדרות עמוד
+st.set_page_config(page_title="סורק מניות AI מתקדם", layout="wide")
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+# עיצוב RTL לעברית
+st.markdown("""
+    <style>
+    .main { direction: rtl; text-align: right; }
+    div[data-testid="stSidebar"] { direction: rtl; }
+    .stMetric { text-align: center; }
+    </style>
+    """, unsafe_allow_html=True)
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
-
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
-
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
-
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
-
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
-
-    return gdp_df
-
-gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
+def get_ai_analysis(api_key, symbol, price, rsi, action):
+    """מנוע הניתוח של Grok AI"""
+    if not api_key:
+        return "הכנס מפתח API בתפריט הצד כדי לקבל ניתוח בינה מלאכותית."
+    
+    try:
+        client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
+        prompt = f"נתח את מניית {symbol}. מחיר נוכחי: {price}$, מדד RSI: {round(rsi, 2)}. המלצה טכנית: {action}. כתוב סיכום קצר בעברית למשקיע לטווח קצר."
+        
+        response = client.chat.completions.create(
+            model="grok-beta",
+            messages=[{"role": "system", "content": "אתה אנליסט מניות מומחה."},
+                      {"role": "user", "content": prompt}]
         )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"שגיאה בחיבור ל-AI: {str(e)}"
+
+def render_chart(symbol):
+    """גרף חי מ-TradingView"""
+    html = f"""
+    <div style="height:400px;"><script src="https://s3.tradingview.com/tv.js"></script>
+    <script>new TradingView.widget({{"autosize": true, "symbol": "{symbol}", "interval": "D", "theme": "dark", "style": "1", "locale": "he_IL", "container_id": "tv_{symbol}"}});</script>
+    <div id="tv_{symbol}" style="height:100%;"></div></div>
+    """
+    components.html(html, height=400)
+
+def analyze_stock(symbol):
+    """משיכת נתונים חיים"""
+    try:
+        ticker = yf.Ticker(symbol)
+        data = ticker.history(period="1mo") # נתונים של החודש האחרון
+        if data.empty: return None
+        
+        current_price = data['Close'].iloc[-1]
+        # חישוב RSI מעודכן
+        rsi_series = ta.momentum.RSIIndicator(data["Close"], window=14).rsi()
+        current_rsi = rsi_series.iloc[-1]
+        
+        # לוגיקת המלצה
+        if current_rsi < 35: action = "קנייה חזקה 🚀"
+        elif current_rsi > 65: action = "מכירה/שורט 📉"
+        else: action = "המתנה/נייטרלי ⚖️"
+        
+        return {
+            "מניה": symbol,
+            "מחיר": round(current_price, 2),
+            "RSI": round(current_rsi, 2),
+            "פעולה": action
+        }
+    except: return None
+
+# --- ממשק משתמש ---
+st.title("🔥 סורק מניות GOD MODE - גרסת AI")
+
+with st.sidebar:
+    st.header("הגדרות מערכת")
+    api_key = st.text_input("הכנס מפתח Grok (XAI) Key:", type="password")
+    watchlist_input = st.text_area("רשימת מניות (מופרדות בפסיק):", "NVDA, TSLA, AAPL, AMZN, MSFT")
+    run_btn = st.button("🚀 הרץ סריקה חיה")
+
+if run_btn:
+    symbols = [s.strip().upper() for s in watchlist_input.split(",")]
+    results = []
+    
+    with st.spinner('מושך נתונים מהבורסה ומנתח...'):
+        for sym in symbols:
+            res = analyze_stock(sym)
+            if res: results.append(res)
+    
+    if results:
+        # טבלת סיכום
+        df = pd.DataFrame(results)
+        st.subheader("📊 מצב שוק נוכחי")
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        
+        # פירוט וניתוח AI
+        st.divider()
+        for stock in results:
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                st.subheader(f"ניתוח מניית {stock['מניה']}")
+                st.write(f"**מחיר:** ${stock['מחיר']} | **מדד חוזק (RSI):** {stock['RSI']}")
+                st.info(f"**המלצה טכנית:** {stock['פעולה']}")
+                
+                # הפעלת ה-AI
+                if api_key:
+                    with st.expander("🤖 לחץ לניתוח בינה מלאכותית (Grok)"):
+                        analysis = get_ai_analysis(api_key, stock['מניה'], stock['מחיר'], stock['RSI'], stock['פעולה'])
+                        st.write(analysis)
+            
+            with col2:
+                render_chart(stock['מניה'])
+            st.divider()
